@@ -4,6 +4,7 @@ local lu = require("luaunit")
 
 local Lib = require("LibSerializer")
 local LibAce = require("tests/AceSerializer")
+local LibDeflate = require("LibDeflate")
 
 local assert = assert
 local tostring = tostring
@@ -63,6 +64,8 @@ local function Test(...)
 	lu.assertTrue(result[1])
 end
 
+local total_lib = 0
+local total_ace = 0
 local function TestReference(filename)
 	local file = io.open(filename, "rb")
 	lu.assertNotNil(file)
@@ -71,7 +74,16 @@ local function TestReference(filename)
 	local result = {LibAce:Deserialize(data)}
 	lu.assertTrue(result[1])
 	local to_ser = {select(2, result)}
-	Test(to_ser)
+	Test(unpack(to_ser))
+
+	local libace_compress = LibDeflate:CompressDeflate(data, {level = 9})
+	local lib_compress = LibDeflate:CompressDeflate(
+		Lib:Serialize(select(2, LibAce:Deserialize(data))), {level=9})
+
+	total_lib = total_lib + lib_compress:len()
+	total_ace = total_ace + libace_compress:len()
+	print(total_lib/total_ace, lib_compress:len()/libace_compress:len(),
+		lib_compress:len(), libace_compress:len())
 end
 
 

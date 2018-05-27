@@ -226,7 +226,7 @@ local function SerializeValue(v, res, nres)
 			-- translates just fine, transmit as-is
 			res[nres+1] = SEPARATOR_NUMBER
 			-- Another optimization. Transform the number with the form "0.7" to "07"
-			res[nres+1] = tonumber(str)
+			res[nres+2] = tonumber(str)
 			--if oldStr ~= res[nres+2] then print(oldStr, res[nres+2]) end
 			nres = nres + 2
 		elseif v == inf or v == -inf then
