@@ -60,20 +60,20 @@ local inf = math.huge
 
 -- separator characters for serializer.
 -- Should replace these variable by constants for better performance later.
-local ESCAPE = '\001' -- Escape character
-local SEPARATOR_FIRST = '\002'
-local SEPARATOR_STRING = '\002'	-- string
-local SEPARATOR_INTEGER = '\003' -- Non floating number
-local SEPARATOR_FLOAT = '\004' -- Mantissa part of floating number
-local SEPARATOR_TABLE_START = '\005' -- Table starts
-local SEPARATOR_TABLE_END = '\006' -- Table ends
-local SEPARATOR_ARRAY_START = '\007' -- Array starts
-local SEPARATOR_TRUE = '\008' -- true
-local SEPARATOR_FALSE = '\009' -- false
-local SEPARATOR_NIL = '\010' -- nil
-local SEPARATOR_STRING_REPLACEMENT = '\011' -- For strings that are replaced (encoded as "reused string index")
-local SEPARATOR_STRING_REUSED = '\012' -- For strings that are reused (encoded as original string)
-local SEPARATOR_LAST = '\012'
+local ESCAPE = '\014' -- Escape character
+local SEPARATOR_FIRST = '\015'
+local SEPARATOR_STRING = '\015'	-- string
+local SEPARATOR_INTEGER = '\016' -- Non floating number
+local SEPARATOR_FLOAT = '\017' -- Mantissa part of floating number
+local SEPARATOR_TABLE_START = '\018' -- Table starts
+local SEPARATOR_TABLE_END = '\019' -- Table ends
+local SEPARATOR_ARRAY_START = '\020' -- Array starts
+local SEPARATOR_TRUE = '\021' -- true
+local SEPARATOR_FALSE = '\022' -- false
+local SEPARATOR_NIL = '\023' -- nil
+local SEPARATOR_STRING_REPLACEMENT = '\024' -- For strings that are replaced (encoded as "reused string index")
+local SEPARATOR_STRING_REUSED = '\025' -- For strings that are reused (encoded as original string)
+local SEPARATOR_LAST = '\025'
 local CH_SEPARATOR_LAST = strbyte(SEPARATOR_LAST)
 local COMPRESSED_INT_BASE = 255 - strbyte("0") + 1
 
