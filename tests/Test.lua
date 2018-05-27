@@ -60,7 +60,11 @@ end
 
 local function Test(...)
 	local result = {Lib:Deserialize(Lib:Serialize(...))}
-	lu.assertEquals(result, {result[1], ...})
+	local msg = ""
+	if select(1, ...) ~= nil then
+		msg = tostring(select(1, ...))
+	end
+	lu.assertEquals(result, {result[1], ...}, msg)
 	lu.assertTrue(result[1])
 end
 
@@ -76,14 +80,15 @@ local function TestReference(filename)
 	local to_ser = {select(2, result)}
 	Test(unpack(to_ser))
 
+	local lib_data = Lib:Serialize(select(2, LibAce:Deserialize(data)))
 	local libace_compress = LibDeflate:CompressDeflate(data, {level = 9})
-	local lib_compress = LibDeflate:CompressDeflate(
-		Lib:Serialize(select(2, LibAce:Deserialize(data))), {level=9})
+	local lib_compress = LibDeflate:CompressDeflate(lib_data, {level=9})
 
 	total_lib = total_lib + lib_compress:len()
 	total_ace = total_ace + libace_compress:len()
-	print(total_lib/total_ace, lib_compress:len()/libace_compress:len(),
-		lib_compress:len(), libace_compress:len())
+	print(("%.4f, %.4f | %d, %d | %d, %d"):format(total_lib/total_ace
+		, lib_compress:len()/libace_compress:len(),
+		lib_compress:len(), libace_compress:len(), lib_data:len(), data:len()))
 end
 
 
@@ -130,7 +135,6 @@ TestBasicTypes = {}
 	function TestBasicTypes:TestMinusInf()
 		Test(-math.huge)
 	end
-
 
 TestFromAce3 = {}
 	function TestFromAce3:TestStringBurning()
@@ -543,7 +547,7 @@ TestFromAce3 = {}
 	end
 
 TestReferences = {}
-	for i = 1, 10 do
+	for i = 1, 11 do
 		TestReferences["Test"..i] = function()
 			TestReference("tests/reference/"..i..".txt")
 		end
@@ -564,7 +568,7 @@ for k, v in pairs(_G) do
 end
 
 local runner = lu.LuaUnit.new()
-local exitCode = runner:runSuite("--verbose")
+local exitCode = runner:runSuite()
 if exitCode == 0 then
 	print("TEST OK")
 else

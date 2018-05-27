@@ -44,7 +44,7 @@ if not LibSerializer then return end
 local strbyte, strchar, gsub, gmatch, format = string.byte, string.char, string.gsub, string.gmatch, string.format
 local assert, error, pcall = assert, error, pcall
 local type, tostring, tonumber = type, tostring, tonumber
-local pairs, ipairs, select, frexp, ldexp = pairs, ipairs, select, math.frexp, math.ldexp
+local pairs, ipairs, select, math_frexp, ldexp = pairs, ipairs, select, math.frexp, math.ldexp
 local tconcat, tinsert = table.concat, table.insert
 local floor = math.floor
 
@@ -58,27 +58,22 @@ end
 -- quick copies of string representations of wonky numbers
 local inf = math.huge
 
-local serNaN  -- can't do this in 4.3, see ace3 ticket 268
-local serInf, serInfMac = "1.#INF", "inf"
-local serNegInf, serNegInfMac = "-1.#INF", "-inf"
-
 -- separator characters for serializer.
 -- Should replace these variable by constants for better performance later.
 local ESCAPE = '\001' -- Escape character
 local SEPARATOR_FIRST = '\002'
 local SEPARATOR_STRING = '\002'	-- string
-local SEPARATOR_NUMBER = '\003' -- Non floating number
-local SEPARATOR_FLOAT_MAN = '\004' -- Mantissa part of floating number
-local SEPARATOR_FLOAT_EXP = '\005' -- Exponent part of floating number
-local SEPARATOR_TABLE_START = '\006' -- Table starts
-local SEPARATOR_TABLE_END = '\007' -- Table ends
-local SEPARATOR_ARRAY_START = '\008' -- Array starts
-local SEPARATOR_TRUE = '\009' -- true
-local SEPARATOR_FALSE = '\010' -- false
-local SEPARATOR_NIL = '\011' -- nil
-local SEPARATOR_STRING_REPLACEMENT = '\012' -- For strings that are replaced (encoded as "reused string index")
-local SEPARATOR_STRING_REUSED = '\013' -- For strings that are reused (encoded as original string)
-local SEPARATOR_LAST = '\013'
+local SEPARATOR_INTEGER = '\003' -- Non floating number
+local SEPARATOR_FLOAT = '\004' -- Mantissa part of floating number
+local SEPARATOR_TABLE_START = '\005' -- Table starts
+local SEPARATOR_TABLE_END = '\006' -- Table ends
+local SEPARATOR_ARRAY_START = '\007' -- Array starts
+local SEPARATOR_TRUE = '\008' -- true
+local SEPARATOR_FALSE = '\009' -- false
+local SEPARATOR_NIL = '\010' -- nil
+local SEPARATOR_STRING_REPLACEMENT = '\011' -- For strings that are replaced (encoded as "reused string index")
+local SEPARATOR_STRING_REUSED = '\012' -- For strings that are reused (encoded as original string)
+local SEPARATOR_LAST = '\012'
 local CH_SEPARATOR_LAST = strbyte(SEPARATOR_LAST)
 local COMPRESSED_INT_BASE = 255 - strbyte("0") + 1
 
@@ -196,6 +191,62 @@ local function DecodeItemString(itemString)
 	return values
 end
 
+local function IntToBase224(n, is_signed)
+	assert(n%1==0)
+	local non_negative = (n >= 0)
+	if not non_negative then
+		n = -n
+	end
+	local s = ""
+	while (n ~= 0) do
+		local digit = n % 224
+		n  = (n-digit)/224
+		if (n == 0 and is_signed) then
+			if (non_negative) then
+				if digit < 112 then
+					s = s..string.char(digit+32)
+				else
+					s = s..string.char(digit+32)..string.char(32)
+				end
+			else
+				if digit < 112 then
+					s = s..string.char(digit+112+32)
+				else
+					s = s..string.char(digit+32)..string.char(112+32)
+				end
+			end
+		else
+			s = s..string.char(digit+32)
+		end
+	end
+	return s
+end
+
+local function Base224ToInt(s, is_signed)
+	local n = 0
+	local base = 1
+	local len = #s
+	local is_negative = false
+	for i=1, len do
+		local digit = string.byte(s, i) - 32
+		if digit < 0 then
+			error("wrong digit")
+		end
+		if is_signed and i == len then
+			if digit >= 112 then
+				is_negative = true
+				digit = digit - 112
+			end
+		end
+		n = n + digit * base
+		base = base * 224
+		if is_negative then
+			n = -n
+		end
+	end
+	return n
+end
+
 local function SerializeValue(v, res, nres)
 	-- We use "^" as a value separator, followed by one byte for type indicator
 	local t = type(v)
@@ -219,27 +270,43 @@ local function SerializeValue(v, res, nres)
 			nres = nres + 2
 		end
 
-	elseif t=="number" then	-- ^N = number (just tostring()ed) or ^F (float components)
-		local str = tostring(v)
-		if tonumber(str) == v  --[[not in 4.3 or str==serNaN]] then
-			local oldStr = str
-			-- translates just fine, transmit as-is
-			res[nres+1] = SEPARATOR_NUMBER
-			-- Another optimization. Transform the number with the form "0.7" to "07"
-			res[nres+2] = tonumber(str)
-			--if oldStr ~= res[nres+2] then print(oldStr, res[nres+2]) end
-			nres = nres + 2
-		elseif v == inf or v == -inf then
-			res[nres+1] = SEPARATOR_NUMBER
-			res[nres+2] = v == inf and serInf or serNegInf
-			nres = nres + 2
-		else
-			local m, e = frexp(v)
-			res[nres+1] = SEPARATOR_FLOAT_MAN
-			res[nres+2] = format("%.0f", m * 2 ^ 53)	-- force mantissa to become integer (it's originally 0.5--0.9999)
-			res[nres+3] = SEPARATOR_FLOAT_EXP
-			res[nres+4] = tostring(e - 53)
-			nres = nres + 4
+	elseif t=="number" then
+		if v ~= v then -- Not a Number (NaN)
+			error ("Cannot serialize NaN")
+		elseif v == inf then
+			nres = nres + 1
+			res[nres] = SEPARATOR_INTEGER
+			nres = nres + 1
+			res[nres] = string.char(32) -- WARNING: Assuming base 224 number cant start with 0 (ASCII 32)
+		elseif v == -inf then
+			nres = nres + 1
+			res[nres] = SEPARATOR_INTEGER
+			nres = nres + 1
+			res[nres] = string.char(32)..string.char(32)
+		elseif v % 1 == 0 then -- Integer
+			nres = nres + 1
+			res[nres] = SEPARATOR_INTEGER
+			nres = nres + 1
+			res[nres] = IntToBase224(v, true)
+		else -- float number
+			-- TODO: for Lua 5.3, need to consider
+			-- "float" typed number is integer.
+			local m, e = math_frexp(v)
+
+			while m % 1 ~= 0 do
+				m = m * 2
+				e = e - 1
+			end
+			assert (e < 0)
+			local encoded_exp = IntToBase224(-e)
+			for _=1, encoded_exp:len() do
+				nres = nres + 1
+				res[nres] = SEPARATOR_FLOAT
+			end
+			nres = nres + 1
+			res[nres] = IntToBase224(m, true)
+			nres = nres + 1
+			res[nres] = encoded_exp
 		end
 
 	elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
@@ -324,18 +391,6 @@ local function DeserializeStringHelper(escape)
 	end
 end
 
-local function DeserializeNumberHelper(number)
-	--[[ not in 4.3 if number == serNaN then
-		return 0/0
-	else]]if number == serNegInf or number == serNegInfMac then
-		return -inf
-	elseif number == serInf or number == serInfMac then
-		return inf
-	else
-		return tonumber(number)
-	end
-end
-
 -- DeserializeValue: worker function for :Deserialize()
 -- It works in two modes:
 --   Main (top-level) mode: Deserialize a list of values and return them all
@@ -367,24 +422,38 @@ local function DeserializeValue(iter, single, ctl, data)
 			error("Invalid string replacement index in LibSerializer")
 		end
 		res = indexToStr[index]
-	elseif ctl == SEPARATOR_NUMBER then
+	elseif ctl == SEPARATOR_INTEGER then
 		if data == "END" then -- End of string mark
 			return
 		end
-		res = DeserializeNumberHelper(data)
+		if data == string.char(32) then
+			res = inf
+		elseif data == string.char(32)..string.char(32) then
+			res = -inf
+		else
+			res = Base224ToInt(data, true)
+		end
 		if not res then
 			error("Invalid serialized number: '"..tostring(data).."'")
 		end
-	elseif ctl == SEPARATOR_FLOAT_MAN then     -- ^F<mantissa>^f<exponent>
-		local ctl2, e = iter()
-		if ctl2 ~= SEPARATOR_FLOAT_EXP then
-			error("Invalid serialized floating-point number")
+	elseif ctl == SEPARATOR_FLOAT then     -- ^F<mantissa>^f<exponent>
+		local exp_strlen = 1
+		while data == "" and exp_strlen < 4 do
+			ctl, data = iter()
+			exp_strlen = exp_strlen + 1
 		end
-		local m = tonumber(data)
-		e = tonumber(e)
-		if not (m and e) then
-			error("Invalid serialized floating-point number, expected mantissa and exponent, got '"..tostring("0."..m).."' and '"..tostring(e).."'")
+		if exp_strlen == 4 then
+			error("TODO3")
 		end
+		if ctl ~= SEPARATOR_FLOAT then
+			error ("TODO")
+		end
+		local len = data:len()
+		if len < exp_strlen then
+			error ("TODO2")
+		end
+		local m = Base224ToInt(data:sub(1, len-exp_strlen), true)
+		local e = -Base224ToInt(data:sub(len-exp_strlen+1, len))
 		res = m*(2^e)
 	elseif ctl == SEPARATOR_TRUE then	-- yeah yeah ignore data portion
 		res = true
@@ -462,7 +531,7 @@ function LibSerializer:Deserialize(str)
 	strIndexDeser = 1
 	baseItemStringDecode = nil
 	wipe(indexToStr)
-	local STR_END = SEPARATOR_NUMBER.."END"
+	local STR_END = SEPARATOR_INTEGER.."END"
 	local iter = gmatch(str..STR_END, "(["..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."])([^"..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."]*)")
 	return pcall(DeserializeValue, iter)
 end
