@@ -111,8 +111,8 @@ TestBasicTypes = {}
 		Test(nil)
 	end
 	function TestBasicTypes:TestFloat()
-		for i=-100, 100 do
-			for j = -100, 100 do
+		for i=-256, 256 do
+			for j = -256, 256 do
 				if j ~= 0 then
 					Test(i/j)
 				end
@@ -134,6 +134,17 @@ TestBasicTypes = {}
 	end
 	function TestBasicTypes:TestMinusInf()
 		Test(-math.huge)
+	end
+	function TestBasicTypes:TestSmallExpFloat()
+		Test(2^(-512))
+		Test(3*2^(-513))
+		Test(2^(-1000))
+	end
+
+	function TestBasicTypes:TestBigExpFloat()
+		Test(2^(1000))
+		Test(3^(500))
+		Test(2.5^(750))
 	end
 
 TestFromAce3 = {}

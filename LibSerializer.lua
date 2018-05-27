@@ -216,6 +216,9 @@ local function IntToBase224(n, is_signed)
 				end
 			end
 		else
+			if digit + 32 >= 256 then
+				print("WTF", digit)
+			end
 			s = s..string.char(digit+32)
 		end
 	end
@@ -282,8 +285,12 @@ local function SerializeValue(v, res, nres)
 			nres = nres + 1
 			res[nres] = SEPARATOR_INTEGER
 			nres = nres + 1
-			res[nres] = string.char(32)..string.char(32)
-		elseif v % 1 == 0 then -- Integer
+			res[nres] = string.char(32+112)  -- WARNING: Assuming base 224 number cant start with -0 (ASCII 32+112)
+		elseif v % 1 == 0 and v > -2^52 and v < 2^52 then
+			-- Integer not in this ranged does not support precise
+			-- integer computation
+			-- TODO: Lua 5.3 int handling
+			-- TODO: Better edge testing.
 			nres = nres + 1
 			res[nres] = SEPARATOR_INTEGER
 			nres = nres + 1
@@ -297,16 +304,24 @@ local function SerializeValue(v, res, nres)
 				m = m * 2
 				e = e - 1
 			end
-			assert (e < 0)
-			local encoded_exp = IntToBase224(-e)
-			for _=1, encoded_exp:len() do
+			if e == 0 then
 				nres = nres + 1
 				res[nres] = SEPARATOR_FLOAT
+				nres = nres + 1
+				res[nres] = IntToBase224(m, true)
+				nres = nres + 1
+				res[nres] = string.char(32)
+			else
+				local encoded_exp = IntToBase224(e, true)
+				for _=1, encoded_exp:len() do
+					nres = nres + 1
+					res[nres] = SEPARATOR_FLOAT
+				end
+				nres = nres + 1
+				res[nres] = IntToBase224(m, true)
+				nres = nres + 1
+				res[nres] = encoded_exp
 			end
-			nres = nres + 1
-			res[nres] = IntToBase224(m, true)
-			nres = nres + 1
-			res[nres] = encoded_exp
 		end
 
 	elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
@@ -428,7 +443,7 @@ local function DeserializeValue(iter, single, ctl, data)
 		end
 		if data == string.char(32) then
 			res = inf
-		elseif data == string.char(32)..string.char(32) then
+		elseif data == string.char(32+112) then
 			res = -inf
 		else
 			res = Base224ToInt(data, true)
@@ -453,7 +468,7 @@ local function DeserializeValue(iter, single, ctl, data)
 			error ("TODO2")
 		end
 		local m = Base224ToInt(data:sub(1, len-exp_strlen), true)
-		local e = -Base224ToInt(data:sub(len-exp_strlen+1, len))
+		local e = Base224ToInt(data:sub(len-exp_strlen+1, len), true)
 		res = m*(2^e)
 	elseif ctl == SEPARATOR_TRUE then	-- yeah yeah ignore data portion
 		res = true
