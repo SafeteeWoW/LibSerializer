@@ -68,6 +68,23 @@ local function Test(...)
 	lu.assertTrue(result[1])
 end
 
+local function ScanTableString(t, counts)
+	for k,v in pairs(t) do
+		if type(k) == "string" then
+			counts[k] = counts[k] and (counts[k] +1) or 0
+		end
+		if type(v) == "string" then
+			counts[v] = counts[v] and (counts[v] +1) or 0
+		end
+		if type(k) == "table" then
+			ScanTableString(k, counts)
+		end
+		if type(v) == "table" then
+			ScanTableString(v, counts)
+		end
+	end
+end
+
 local total_lib = 0
 local total_ace = 0
 local function TestReference(filename)
@@ -77,7 +94,27 @@ local function TestReference(filename)
 	file:close()
 	local result = {LibAce:Deserialize(data)}
 	lu.assertTrue(result[1])
-	local to_ser = {select(2, result)}
+	local to_ser = {select(2, unpack(result))}
+	assert(next(to_ser))
+	local string_counts = {}
+	ScanTableString(to_ser, string_counts)
+	local sorted_counts = {}
+	for _,v in pairs(string_counts) do
+		sorted_counts[#sorted_counts+1] = v
+	end
+	table.sort(sorted_counts)
+	local total_count = 0
+	local top_count = 0
+	local max_count = 0
+	for _, v in pairs(string_counts) do
+		if v > max_count then
+			max_count = v
+		end
+		total_count = total_count + v
+	end
+	for i=#sorted_counts, #sorted_counts-24, -1 do
+		top_count = top_count + (sorted_counts[i] or 0)
+	end
 	Test(unpack(to_ser))
 
 	local lib_data = Lib:Serialize(select(2, LibAce:Deserialize(data)))
@@ -86,9 +123,11 @@ local function TestReference(filename)
 
 	total_lib = total_lib + lib_compress:len()
 	total_ace = total_ace + libace_compress:len()
-	print(("%.4f, %.4f | %d, %d | %d, %d"):format(total_lib/total_ace
+	print(("%.4f, %.4f | %d, %d | %d, %d | max count: %d. total count: %d"
+		..". total top 24: %d "):format(total_lib/total_ace
 		, lib_compress:len()/libace_compress:len(),
-		lib_compress:len(), libace_compress:len(), lib_data:len(), data:len()))
+		lib_compress:len(), libace_compress:len(), lib_data:len(), data:len()
+		, max_count, total_count, top_count))
 end
 
 

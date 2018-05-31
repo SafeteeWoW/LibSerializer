@@ -77,11 +77,14 @@ local SEPARATOR_LAST = '\025'
 local CH_SEPARATOR_LAST = strbyte(SEPARATOR_LAST)
 local COMPRESSED_INT_BASE = 255 - strbyte("0") + 1
 
+-- One byte string?
+-- ASCII 1-10, 26-31, 248, 249, 250, 251, 252, 253, 254, 255
 -- For string replacment
 local strIndexSer = 0
 local strToIndex = {}
 local indexToStr = {}
 local counts = {}
+local key_counts = {}
 local baseItemStringDecode = nil
 
 -- Serialization functions
@@ -117,18 +120,21 @@ local function IsTableArray(t)
 end
 
 -- Preprocess the value to get duplicate strings/number count
-local function GetValueCounts(v)
+local function GetValueCounts(val)
 	-- We use "^" as a value separator, followed by one byte for type indicator
-	local t = type(v)
+	local t = type(val)
 
 	if t == "string" then
-		counts[v] = counts[v] and counts[v] + 1 or 1
+		counts[val] = counts[val] and counts[val] + 1 or 1
 	elseif t == "number" then
-		counts[v] = counts[v] and counts[v] + 1 or 1
+		counts[val] = counts[val] and counts[val] + 1 or 1
 	elseif t == "table" then	-- ^T...^t = table (list of key,value pairs)
-		for k, v in pairs(v) do
-			nres = GetValueCounts( k)
-			nres = GetValueCounts(v)
+		for k, v in pairs(val) do
+			if type(k) == "string" then
+				key_counts[k] = key_counts[k] and key_counts[k] + 1 or 1
+			end
+			GetValueCounts(k)
+			GetValueCounts(v)
 		end
 	end
 end
@@ -157,38 +163,6 @@ local function CompressedIntToInt(cInt)
 		multiplier = multiplier * COMPRESSED_INT_BASE
 	end
 	return int
-end
-
-local function EncodeItemString(values)
-	local s = {}
-	for _, v in ipairs(values) do
-		if v == 0 then
-			tinsert(s, "")
-		elseif v > 0 then
-			tinsert(s, tostring(v*2))
-		else
-			tinsert(s, tostring((math.abs(v))*2+1))
-		end
-	end
-	return tconcat(s, ":")
-end
-
-local function DecodeItemString(itemString)
-	local values = {}
-	for v in itemString:gmatch(":(-?[0-9]*)") do
-		if v == "" then
-			tinsert(values, 0)
-		else
-			local n = tonumber(v)
-			if n % 2 == 0 then
-				tinsert(values, tonumber(n/2))
-			else
-				tinsert(values, -tonumber((v-1)/2))
-			end
-
-		end
-	end
-	return values
 end
 
 local function IntToBase224(n, is_signed)
@@ -250,115 +224,127 @@ local function Base224ToInt(s, is_signed)
 	return n
 end
 
+local MARK_TABLE_END = {}
 local function SerializeValue(v, res, nres)
-	-- We use "^" as a value separator, followed by one byte for type indicator
-	local t = type(v)
-
-	if t == "string" then		-- ^S = string (escaped to remove nonprints, "^"s, etc)
-		if not strToIndex[v] then
-			if counts[v] > 1 and v:len() > tostring(strIndexSer):len() then
-				res[nres+1] = SEPARATOR_STRING_REUSED
-				res[nres+2] = gsub(v, ".", SerializeStringHelper)
-				nres = nres + 2
-				strToIndex[v] = strIndexSer
-				strIndexSer = strIndexSer + 1
+	local list = {}
+	local list_size = 1
+	list[list_size] = v
+	while list_size > 0 do
+		v = list[list_size]
+		list_size = list_size - 1
+		local t = type(v)
+		if v == MARK_TABLE_END then
+			nres = nres + 1
+			res[nres] = SEPARATOR_TABLE_END
+		elseif t == "string" then		-- ^S = string (escaped to remove nonprints, "^"s, etc)
+			if not strToIndex[v] then
+				if counts[v] > 1 and v:len() > tostring(strIndexSer):len() then
+					res[nres+1] = SEPARATOR_STRING_REUSED
+					res[nres+2] = gsub(v, ".", SerializeStringHelper)
+					nres = nres + 2
+					strToIndex[v] = strIndexSer
+					strIndexSer = strIndexSer + 1
+				else
+					res[nres+1] = SEPARATOR_STRING
+					res[nres+2] = gsub(v, ".", SerializeStringHelper)
+					nres = nres + 2
+				end
 			else
-				res[nres+1] = SEPARATOR_STRING
-				res[nres+2] = gsub(v, ".", SerializeStringHelper)
+				res[nres+1] = SEPARATOR_STRING_REPLACEMENT
+				res[nres+2] = IntToCompressedInt(strToIndex[v])
 				nres = nres + 2
 			end
-		else
-			res[nres+1] = SEPARATOR_STRING_REPLACEMENT
-			res[nres+2] = IntToCompressedInt(strToIndex[v])
-			nres = nres + 2
-		end
 
-	elseif t=="number" then
-		if v ~= v then -- Not a Number (NaN)
-			error ("Cannot serialize NaN")
-		elseif v == inf then
-			nres = nres + 1
-			res[nres] = SEPARATOR_INTEGER
-			nres = nres + 1
-			res[nres] = string.char(32) -- WARNING: Assuming base 224 number cant start with 0 (ASCII 32)
-		elseif v == -inf then
-			nres = nres + 1
-			res[nres] = SEPARATOR_INTEGER
-			nres = nres + 1
-			res[nres] = string.char(32+112)  -- WARNING: Assuming base 224 number cant start with -0 (ASCII 32+112)
-		elseif v % 1 == 0 and v > -2^52 and v < 2^52 then
-			-- Integer not in this ranged does not support precise
-			-- integer computation
-			-- TODO: Lua 5.3 int handling
-			-- TODO: Better edge testing.
-			nres = nres + 1
-			res[nres] = SEPARATOR_INTEGER
-			nres = nres + 1
-			res[nres] = IntToBase224(v, true)
-		else -- float number
-			-- TODO: for Lua 5.3, need to consider
-			-- "float" typed number is integer.
-			local m, e = math_frexp(v)
+		elseif t=="number" then
+			if v ~= v then -- Not a Number (NaN)
+				error ("Cannot serialize NaN")
+			elseif v == inf then
+				nres = nres + 1
+				res[nres] = SEPARATOR_INTEGER
+				nres = nres + 1
+				res[nres] = string.char(32) -- WARNING: Assuming base 224 number cant start with 0 (ASCII 32)
+			elseif v == -inf then
+				nres = nres + 1
+				res[nres] = SEPARATOR_INTEGER
+				nres = nres + 1
+				res[nres] = string.char(32+112)  -- WARNING: Assuming base 224 number cant start with -0 (ASCII 32+112)
+			elseif v % 1 == 0 and v > -2^52 and v < 2^52 then
+				-- Integer not in this ranged does not support precise
+				-- integer computation
+				-- TODO: Lua 5.3 int handling
+				-- TODO: Better edge testing.
+				nres = nres + 1
+				res[nres] = SEPARATOR_INTEGER
+				nres = nres + 1
+				res[nres] = IntToBase224(v, true)
+			else -- float number
+				-- TODO: for Lua 5.3, need to consider
+				-- "float" typed number is integer.
+				local m, e = math_frexp(v)
 
-			while m % 1 ~= 0 do
-				m = m * 2
-				e = e - 1
-			end
-			if e == 0 then
-				nres = nres + 1
-				res[nres] = SEPARATOR_FLOAT
-				nres = nres + 1
-				res[nres] = IntToBase224(m, true)
-				nres = nres + 1
-				res[nres] = string.char(32)
-			else
-				local encoded_exp = IntToBase224(e, true)
-				for _=1, encoded_exp:len() do
+				while m % 1 ~= 0 do
+					m = m * 2
+					e = e - 1
+				end
+				if e == 0 then
 					nres = nres + 1
 					res[nres] = SEPARATOR_FLOAT
+					nres = nres + 1
+					res[nres] = IntToBase224(m, true)
+					nres = nres + 1
+					res[nres] = string.char(32)
+				else
+					local encoded_exp = IntToBase224(e, true)
+					for _=1, encoded_exp:len() do
+						nres = nres + 1
+						res[nres] = SEPARATOR_FLOAT
+					end
+					nres = nres + 1
+					res[nres] = IntToBase224(m, true)
+					nres = nres + 1
+					res[nres] = encoded_exp
 				end
-				nres = nres + 1
-				res[nres] = IntToBase224(m, true)
-				nres = nres + 1
-				res[nres] = encoded_exp
 			end
-		end
 
-	elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
-		local isArray = IsTableArray(v)
-		if isArray then
-			nres=nres+1
-			res[nres] = SEPARATOR_ARRAY_START
-			for _, v in ipairs(v) do -- Key is not serilaized for array
-				nres = SerializeValue(v, res, nres)
+		elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
+			local isArray = IsTableArray(v)
+			if isArray then
+				nres=nres+1
+				res[nres] = SEPARATOR_ARRAY_START
+				list_size = list_size + 1
+				list[list_size] = MARK_TABLE_END
+				for k=#v, 1, -1 do -- Key is not serilaized for array
+					list_size = list_size + 1
+					list[list_size] = v[k]
+				end
+			else
+				nres=nres+1
+				res[nres] = SEPARATOR_TABLE_START
+				list_size = list_size + 1
+				list[list_size] = MARK_TABLE_END
+				for k, v in pairs(v) do -- Key is not serilaized for array
+					list_size = list_size + 1
+					list[list_size] = v
+					list_size = list_size + 1
+					list[list_size] = k
+				end
 			end
+
+		elseif t=="boolean" then	-- ^B = true, ^b = false
 			nres=nres+1
-			res[nres] = SEPARATOR_TABLE_END
+			if v then
+				res[nres] = SEPARATOR_TRUE	-- true
+			else
+				res[nres] = SEPARATOR_FALSE	-- false
+			end
+
+		elseif t=="nil" then		-- ^Z = nil (zero, "N" was taken :P)
+			nres=nres+1
+			res[nres] = SEPARATOR_NIL
+
 		else
-			nres=nres+1
-			res[nres] = SEPARATOR_TABLE_START
-			for k,v in pairs(v) do
-				nres = SerializeValue(k, res, nres)
-				nres = SerializeValue(v, res, nres)
-			end
-			nres=nres+1
-			res[nres] = SEPARATOR_TABLE_END
+			error(MAJOR..": Cannot serialize a value of type '"..t.."'")	-- can't produce error on right level, this is wildly recursive
 		end
-
-	elseif t=="boolean" then	-- ^B = true, ^b = false
-		nres=nres+1
-		if v then
-			res[nres] = SEPARATOR_TRUE	-- true
-		else
-			res[nres] = SEPARATOR_FALSE	-- false
-		end
-
-	elseif t=="nil" then		-- ^Z = nil (zero, "N" was taken :P)
-		nres=nres+1
-		res[nres] = SEPARATOR_NIL
-
-	else
-		error(MAJOR..": Cannot serialize a value of type '"..t.."'")	-- can't produce error on right level, this is wildly recursive
 	end
 
 	return nres
