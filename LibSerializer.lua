@@ -225,12 +225,38 @@ local function Base224ToInt(s, is_signed)
 end
 
 local MARK_TABLE_END = {}
-local function SerializeValue(v, res, nres)
+
+local serializeTbl = { } -- Unlike AceSerializer-3.0, there is no header in the serialized string.
+
+--- Serialize the data passed into the function.
+-- Takes a list of values (strings, numbers, booleans, nils, tables)
+-- and returns it in serialized form (a string).\\
+-- May throw errors on invalid data types.
+-- @param ... List of values to serialize
+-- @return The data in its serialized form (string)
+function LibSerializer:Serialize(...)
+	strIndexSer = 1
+	wipe(strToIndex)
+	wipe(counts)
+	baseItemStringDecode = nil
+
+	for i=1, select("#", ...) do
+		local v = select(i, ...)
+		GetValueCounts(v)
+	end
+
 	local stack = {}
-	local stack_size = 1
-	stack[stack_size] = v
+	local stack_size = 0
+	for i=select("#", ...), 1, -1 do
+		local v = select(i, ...)
+		stack_size = stack_size + 1
+		stack[stack_size] = v
+	end
+
+	local res = {}
+	local nres = 0
 	while stack_size > 0 do
-		v = stack[stack_size]
+		local v = stack[stack_size]
 		stack_size = stack_size - 1
 		local t = type(v)
 		if v == MARK_TABLE_END then
@@ -347,37 +373,7 @@ local function SerializeValue(v, res, nres)
 		end
 	end
 
-	return nres
-end
-
-
-
-local serializeTbl = { } -- Unlike AceSerializer-3.0, there is no header in the serialized string.
-
---- Serialize the data passed into the function.
--- Takes a list of values (strings, numbers, booleans, nils, tables)
--- and returns it in serialized form (a string).\\
--- May throw errors on invalid data types.
--- @param ... List of values to serialize
--- @return The data in its serialized form (string)
-function LibSerializer:Serialize(...)
-	local nres = 0
-	strIndexSer = 1
-	wipe(strToIndex)
-	wipe(counts)
-	baseItemStringDecode = nil
-
-	for i=1, select("#", ...) do
-		local v = select(i, ...)
-		GetValueCounts(v)
-	end
-
-	for i=1, select("#", ...) do
-		local v = select(i, ...)
-		nres = SerializeValue(v, serializeTbl, nres)
-	end
-
-	return tconcat(serializeTbl, "", 1, nres)
+	return tconcat(res, "", 1, nres)
 end
 
 -- Deserialization functions
@@ -542,7 +538,6 @@ end
 ----------------------------------------
 
 LibSerializer.internals = {	-- for test scripts
-	SerializeValue = SerializeValue,
 	SerializeStringHelper = SerializeStringHelper,
 	IntToCompressedInt = IntToCompressedInt,
 	CompressedIntToInt = CompressedIntToInt,
