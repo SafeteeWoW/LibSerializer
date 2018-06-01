@@ -226,12 +226,12 @@ end
 
 local MARK_TABLE_END = {}
 local function SerializeValue(v, res, nres)
-	local list = {}
-	local list_size = 1
-	list[list_size] = v
-	while list_size > 0 do
-		v = list[list_size]
-		list_size = list_size - 1
+	local stack = {}
+	local stack_size = 1
+	stack[stack_size] = v
+	while stack_size > 0 do
+		v = stack[stack_size]
+		stack_size = stack_size - 1
 		local t = type(v)
 		if v == MARK_TABLE_END then
 			nres = nres + 1
@@ -311,22 +311,22 @@ local function SerializeValue(v, res, nres)
 			if isArray then
 				nres=nres+1
 				res[nres] = SEPARATOR_ARRAY_START
-				list_size = list_size + 1
-				list[list_size] = MARK_TABLE_END
+				stack_size = stack_size + 1
+				stack[stack_size] = MARK_TABLE_END
 				for k=#v, 1, -1 do -- Key is not serilaized for array
-					list_size = list_size + 1
-					list[list_size] = v[k]
+					stack_size = stack_size + 1
+					stack[stack_size] = v[k]
 				end
 			else
 				nres=nres+1
 				res[nres] = SEPARATOR_TABLE_START
-				list_size = list_size + 1
-				list[list_size] = MARK_TABLE_END
+				stack_size = stack_size + 1
+				stack[stack_size] = MARK_TABLE_END
 				for k, v in pairs(v) do -- Key is not serilaized for array
-					list_size = list_size + 1
-					list[list_size] = v
-					list_size = list_size + 1
-					list[list_size] = k
+					stack_size = stack_size + 1
+					stack[stack_size] = v
+					stack_size = stack_size + 1
+					stack[stack_size] = k
 				end
 			end
 
