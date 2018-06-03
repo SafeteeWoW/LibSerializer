@@ -75,12 +75,22 @@ local SEPARATOR_LAST = '\025'
 
 
 -- Serialization functions
-local function SerializeStringHelper(ch)	-- Used by SerializeValue for strings
-	local n = strbyte(ch)
+local SerializeStringHelper = {}
+for i= 0, 255 do
+	local ch = strchar(i)
 	if ch == ESCAPE or (SEPARATOR_FIRST <= ch and ch <= SEPARATOR_LAST) then
-		return ESCAPE..strchar(n+47)
-	else
-		return ch
+		SerializeStringHelper[ch] =
+			ESCAPE..strchar(i+32-strbyte(ESCAPE))
+	end
+end
+
+local DeserializeStringHelper = {}
+-- TODO: Error check when Escape follows an invalid character.
+
+for i= 0, 255 do
+	local ch = strchar(i)
+	if ch == ESCAPE or (SEPARATOR_FIRST <= ch and ch <= SEPARATOR_LAST) then
+		DeserializeStringHelper[ESCAPE..strchar(i+32-strbyte(ESCAPE))] = ch
 	end
 end
 
@@ -141,6 +151,10 @@ local function Base224ToInt(s, is_signed)
 		end
 	end
 	return n
+end
+
+local function SortTable2ndDecreasing(a, b)
+	return a[2] > b[2] or (a[2] == b[2] and a[1] < b[1])
 end
 
 local MARK_TABLE_END = {}
@@ -264,21 +278,23 @@ function LibSerializer:Serialize(...)
 				local type_val = type(val)
 				if type_val == "string" then
 					if not strToIndex[val] then
-						if counts[val] > 1 and #val > #(tostring(strIndexSer)) then
+						local index = IntToBase224(strIndexSer)
+						local val_written = gsub(val, ".", SerializeStringHelper)
+						if counts[val] > 1 and #val_written > #index then
 							res[nres] = SEPARATOR_STRING_REUSED
 							nres = nres + 1
-							res[nres] = gsub(val, ".", SerializeStringHelper)
-							strToIndex[val] = strIndexSer
+							res[nres] = val_written
+							strToIndex[val] = index
 							strIndexSer = strIndexSer + 1
 						else
 							res[nres] = SEPARATOR_STRING
 							nres = nres + 1
-							res[nres] = gsub(val, ".", SerializeStringHelper)
+							res[nres] = val_written
 						end
 					else
 						res[nres] = SEPARATOR_STRING_REPLACEMENT
 						nres = nres + 1
-						res[nres] = IntToBase224(strToIndex[val])
+						res[nres] = strToIndex[val]
 					end
 				elseif type_val == "number" then
 					if val ~= val then -- Not a Number (NaN)
@@ -371,17 +387,7 @@ function LibSerializer:Serialize(...)
 	return tconcat(res, "", 1, nres)
 end
 
--- Deserialization functions
-local function DeserializeStringHelper(escape)
-	local n = strbyte(escape, 2, 2)
-	n = n - 47
-	local ch = strchar(n)
-	if ch == ESCAPE or (SEPARATOR_FIRST <= ch and ch <= SEPARATOR_LAST) then
-		return ch
-	else
-		error("DeserializeStringHelper got called for '"..escape.."'?!?")  -- can't be reached unless regex is screwed up
-	end
-end
+
 
 -- DeserializeValue: worker function for :Deserialize()
 -- It works in two modes:
