@@ -60,11 +60,8 @@ end
 
 local function Test(...)
 	local result = {Lib:Deserialize(Lib:Serialize(...))}
-	local msg = ""
-	if select(1, ...) ~= nil then
-		msg = tostring(select(1, ...))
-	end
-	lu.assertEquals({result[1], ...}, result, msg)
+	lu.assertTrue(result[1], result[2])
+	lu.assertEquals({result[1], ...}, result)
 	lu.assertTrue(result[1])
 end
 

@@ -157,7 +157,6 @@ local function SortTable2ndDecreasing(a, b)
 	return a[2] > b[2] or (a[2] == b[2] and a[1] < b[1])
 end
 
-local MARK_TABLE_END = {}
 local _NIL = {}
 --- Serialize the data passed into the function.
 -- Takes a list of values (strings, numbers, booleans, nils, tables)
@@ -224,6 +223,24 @@ function LibSerializer:Serialize(...)
 		cur_table = table_stack[table_stack_size]
 	end
 
+
+	local sort_key = {}
+	local sort_key_tblsize = 0
+	for k, v in pairs(key_counts) do
+		if v > 1 then
+			sort_key_tblsize = sort_key_tblsize + 1
+			sort_key[sort_key_tblsize] = {k, v}
+		end
+	end
+	table.sort(sort_key, SortTable2ndDecreasing)
+
+	local duplicate_keys = {}
+	local duplicate_keys_tblsize = sort_key_tblsize
+	for i = 1, duplicate_keys_tblsize do
+		duplicate_keys[i] = sort_key[i][1]
+	end
+	sort_key = nil -- free memory space
+
 	local res = {}
 	local nres = 0
 	cur_table = root_table
@@ -231,6 +248,11 @@ function LibSerializer:Serialize(...)
 	table_stack = {cur_table}
 	local table_cur_key = {0}
 	local table_next_val = {}
+	if next(duplicate_keys) then
+		root_table[0] = duplicate_keys
+		table_cur_key[1] = -1
+		table_is_array[duplicate_keys] = true
+	end
 	table_is_array[root_table] = true
 
 	if select("#", ...) == 0 then
@@ -358,7 +380,8 @@ function LibSerializer:Serialize(...)
 					if cur_table_is_array then
 						table_iter = ipairs(cur_table)
 						k = 0
-						res[nres] = SEPARATOR_ARRAY_START
+						res[nres] = (val ~= duplicate_keys) and
+							SEPARATOR_ARRAY_START or SEPARATOR_TABLE_END
 					else
 						table_iter = next
 						k = nil
@@ -387,17 +410,6 @@ function LibSerializer:Serialize(...)
 	return tconcat(res, "", 1, nres)
 end
 
-
-
--- DeserializeValue: worker function for :Deserialize()
--- It works in two modes:
---   Main (top-level) mode: Deserialize a list of values and return them all
---   Recursive (table) mode: Deserialize only a single value (_may_ of course be another table with lots of subvalues in it)
---
--- The function _always_ works recursively due to having to build a list of values to return
---
--- Callers are expected to pcall(DeserializeValue) to trap errors
-
 local function DeserializeValue(iter)
 	local indexToStr = {}
 	local strIndexDeser = 1
@@ -410,6 +422,7 @@ local function DeserializeValue(iter)
 	local cur_table = root_table
 	local cur_key = 1
 	local cur_is_array = true
+	local duplicate_keys
 
 	while true do
 		local ctl, data = iter()
@@ -463,17 +476,17 @@ local function DeserializeValue(iter)
 			local m = Base224ToInt(data:sub(1, len-exp_strlen), true)
 			local e = Base224ToInt(data:sub(len-exp_strlen+1, len), true)
 			res = m*(2^e)
-		elseif ctl == SEPARATOR_TRUE then	-- yeah yeah ignore data portion
+		elseif ctl == SEPARATOR_TRUE then
 			res = true
 			if data ~= "" then
 				error("Unexpected data for LibSerializer after true marker")
 			end
-		elseif ctl == SEPARATOR_FALSE then   -- yeah yeah ignore data portion
+		elseif ctl == SEPARATOR_FALSE then
 			res = false
 			if data ~= "" then
 				error("Unexpected data for LibSerializer after false marker")
 			end
-		elseif ctl == SEPARATOR_NIL then	-- yeah yeah ignore data portion
+		elseif ctl == SEPARATOR_NIL then
 			res = nil
 			if data ~= "" then
 				error("Unexpected data for LibSerializer after nil marker")
@@ -483,15 +496,26 @@ local function DeserializeValue(iter)
 		elseif ctl == SEPARATOR_ARRAY_START then
 			res = {}
 		elseif ctl == SEPARATOR_TABLE_END then
-			table_stack_size = table_stack_size - 1
-			cur_table = table_stack[table_stack_size]
-			cur_is_array = 	table_is_array[table_stack_size]
-			cur_key = table_key[table_stack_size]
-			if table_stack_size == 0 then
-				error("TODO")
+			if (table_stack_size == 1
+					and not duplicate_keys) then
+				duplicate_keys = {}
+				table_key[table_stack_size] = cur_key
+				cur_table = duplicate_keys
+				table_stack_size = table_stack_size + 1
+				table_stack[table_stack_size] = cur_table
+				cur_key = 1
+			else
+				table_stack_size = table_stack_size - 1
+				cur_table = table_stack[table_stack_size]
+				cur_is_array = 	table_is_array[table_stack_size]
+				cur_key = table_key[table_stack_size]
+				if table_stack_size == 0 then
+					error("TODO. wrong table end mark")
+				end
 			end
 		else
-			error("Invalid LibSerializer control code '"..ctl.."'(".."character number code:"..strbyte(ctl)..")")
+			error("Invalid LibSerializer control code '"..ctl
+				.."'(".."character number code:"..strbyte(ctl)..")")
 		end
 
 		if ctl ~= SEPARATOR_TABLE_END then
@@ -542,7 +566,8 @@ end
 -- @return true followed by a list of values, OR false followed by an error message
 function LibSerializer:Deserialize(str)
 	local STR_END = SEPARATOR_INTEGER.."END"
-	local iter = gmatch(str..STR_END, "(["..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."])([^"..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."]*)")
+	local iter = gmatch(str..STR_END, "(["..SEPARATOR_FIRST.."-"
+		..SEPARATOR_LAST.."])([^"..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."]*)")
 	return pcall(DeserializeValue, iter)
 end
 
@@ -551,9 +576,6 @@ end
 ----------------------------------------
 
 LibSerializer.internals = {	-- for test scripts
-	SerializeStringHelper = SerializeStringHelper,
-	IntToCompressedInt = IntToCompressedInt,
-	CompressedIntToInt = CompressedIntToInt,
 }
 
 local mixins = {
@@ -564,7 +586,7 @@ local mixins = {
 LibSerializer.embeds = LibSerializer.embeds or {}
 
 function LibSerializer:Embed(target)
-	for k, v in pairs(mixins) do
+	for _, v in pairs(mixins) do
 		target[v] = self[v]
 	end
 	self.embeds[target] = true
@@ -572,7 +594,7 @@ function LibSerializer:Embed(target)
 end
 
 -- Update embeds
-for target, v in pairs(LibSerializer.embeds) do
+for target, _ in pairs(LibSerializer.embeds) do
 	LibSerializer:Embed(target)
 end
 
