@@ -139,32 +139,6 @@ local function GetValueCounts(val)
 	end
 end
 
-local function IntToCompressedInt(int)
-	local t = {}
-	if int == 0 then
-		return strchar(48)
-	else
-		while int > 0 do
-			local rem = int % COMPRESSED_INT_BASE
-			int = floor(int / COMPRESSED_INT_BASE)
-			local ch = strchar(rem + 48)
-			tinsert(t, 1, ch)
-		end
-		return tconcat(t)
-	end
-end
-
-local function CompressedIntToInt(cInt)
-	local int = 0
-	local multiplier = 1
-	for i=cInt:len(), 1, -1 do
-		local n = strbyte(cInt, i) - 48
-		int = int + n * multiplier
-		multiplier = multiplier * COMPRESSED_INT_BASE
-	end
-	return int
-end
-
 local function IntToBase224(n, is_signed)
 	assert(n%1==0)
 	local non_negative = (n >= 0)
@@ -277,7 +251,7 @@ function LibSerializer:Serialize(...)
 				end
 			else
 				res[nres+1] = SEPARATOR_STRING_REPLACEMENT
-				res[nres+2] = IntToCompressedInt(strToIndex[v])
+				res[nres+2] = IntToBase224(strToIndex[v])
 				nres = nres + 2
 			end
 
@@ -367,7 +341,6 @@ function LibSerializer:Serialize(...)
 		elseif t=="nil" then		-- ^Z = nil (zero, "N" was taken :P)
 			nres=nres+1
 			res[nres] = SEPARATOR_NIL
-
 		else
 			error(MAJOR..": Cannot serialize a value of type '"..t.."'")	-- can't produce error on right level, this is wildly recursive
 		end
@@ -421,7 +394,7 @@ local function DeserializeValue(iter)
 			indexToStr[strIndexDeser] = res
 			strIndexDeser = strIndexDeser + 1
 		elseif ctl == SEPARATOR_STRING_REPLACEMENT then
-			local index = CompressedIntToInt(data)
+			local index = Base224ToInt(data)
 			if not index or not indexToStr[index] then
 				error("Invalid string replacement index in LibSerializer")
 			end
