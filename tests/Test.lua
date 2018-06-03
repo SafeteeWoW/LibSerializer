@@ -93,6 +93,7 @@ local function TestReference(filename)
 	local data = file:read("*all")
 	file:close()
 	local result = {LibAce:Deserialize(data)}
+
 	lu.assertTrue(result[1])
 	local to_ser = {select(2, unpack(result))}
 	assert(next(to_ser))
@@ -117,7 +118,18 @@ local function TestReference(filename)
 	end
 	Test(unpack(to_ser))
 
-	local lib_data = Lib:Serialize(select(2, LibAce:Deserialize(data)))
+	local time = os.clock()
+	local deser = {select(2, LibAce:Deserialize(data))}
+	local time_ace_deser = os.clock() - time
+	time = os.clock()
+	LibAce:Serialize(unpack(deser))
+	local time_ace_ser = os.clock() - time
+	time = os.clock()
+	local lib_data = Lib:Serialize(unpack(deser))
+	local time_lib_ser = os.clock() - time
+	time = os.clock()
+	Lib:Deserialize(lib_data)
+	local time_lib_deser = os.clock() - time
 	local libace_compress = LibDeflate:CompressDeflate(data, {level = 9})
 	local lib_compress = LibDeflate:CompressDeflate(lib_data, {level=9})
 
@@ -128,6 +140,9 @@ local function TestReference(filename)
 		, lib_compress:len()/libace_compress:len(),
 		lib_compress:len(), libace_compress:len(), lib_data:len(), data:len()
 		, max_count, total_count, top_count))
+	print(("Ser_time: %.3fms Deser_time:%.3fms Ace_Ser_time: %.3fms Ace_Deser_time: %.3fms")
+		:format(time_lib_ser*1000, time_lib_deser*1000, time_ace_ser*1000, time_ace_deser*1000))
+	print("")
 end
 
 
@@ -186,6 +201,19 @@ TestBasicTypes = {}
 		Test(2.5^(750))
 	end
 
+TestTables = {}
+	function TestTables:TestEmpty()
+		Test({})
+	end
+	function TestTables:TestArray()
+		Test({1, 2, 3, 4, 5})
+	end
+	function TestTables:TestNonArray()
+		Test({a=1, b=2, c=3, d=4, e=5})
+	end
+	function TestTables:TestRecursive()
+		Test({{{}}, {{1, {}, {{}}}}})
+	end
 TestFromAce3 = {}
 	function TestFromAce3:TestStringBurning()
 		for _=1,1000 do
@@ -248,7 +276,8 @@ TestFromAce3 = {}
 				},
 				"\001\032\127^~fin!^^",
 				[true]="yes",
-				[false]="no"	-- ACE-130
+				[false]="no",	-- ACE-130
+				[{1, 2, 3}] = {4, 5, 6},
 			}
 		)
 	end

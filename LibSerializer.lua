@@ -47,6 +47,7 @@ local type, tostring, tonumber = type, tostring, tonumber
 local pairs, ipairs, select, math_frexp, ldexp = pairs, ipairs, select, math.frexp, math.ldexp
 local tconcat, tinsert = table.concat, table.insert
 local floor = math.floor
+local next = next
 
 -- quick copies of string representations of wonky numbers
 local inf = math.huge
@@ -143,7 +144,7 @@ local function Base224ToInt(s, is_signed)
 end
 
 local MARK_TABLE_END = {}
-
+local _NIL = {}
 --- Serialize the data passed into the function.
 -- Takes a list of values (strings, numbers, booleans, nils, tables)
 -- and returns it in serialized form (a string).\\
@@ -156,7 +157,8 @@ function LibSerializer:Serialize(...)
 	local counts = {}
 	local key_counts = {}
 
-	local cur_table = {...}
+	local root_table = {...}
+	local cur_table = root_table
 	local table_stack_size = 1
 	local table_stack = {cur_table}
 	local table_next = {}
@@ -208,132 +210,163 @@ function LibSerializer:Serialize(...)
 		cur_table = table_stack[table_stack_size]
 	end
 
-	local stack = {}
-	local stack_size = 0
-	for i=select("#", ...), 1, -1 do
-		local v = select(i, ...)
-		stack_size = stack_size + 1
-		stack[stack_size] = v
-	end
-
 	local res = {}
 	local nres = 0
-	while stack_size > 0 do
-		local v = stack[stack_size]
-		stack_size = stack_size - 1
-		local t = type(v)
-		if v == MARK_TABLE_END then
-			nres = nres + 1
-			res[nres] = SEPARATOR_TABLE_END
-		elseif t == "string" then		-- ^S = string (escaped to remove nonprints, "^"s, etc)
-			if not strToIndex[v] then
-				if counts[v] > 1 and v:len() > tostring(strIndexSer):len() then
-					res[nres+1] = SEPARATOR_STRING_REUSED
-					res[nres+2] = gsub(v, ".", SerializeStringHelper)
-					nres = nres + 2
-					strToIndex[v] = strIndexSer
-					strIndexSer = strIndexSer + 1
-				else
-					res[nres+1] = SEPARATOR_STRING
-					res[nres+2] = gsub(v, ".", SerializeStringHelper)
-					nres = nres + 2
-				end
-			else
-				res[nres+1] = SEPARATOR_STRING_REPLACEMENT
-				res[nres+2] = IntToBase224(strToIndex[v])
-				nres = nres + 2
+	cur_table = root_table
+	table_stack_size = 1
+	table_stack = {cur_table}
+	local table_cur_key = {0}
+	local table_next_val = {}
+	table_is_array[root_table] = true
+
+	if select("#", ...) == 0 then
+		root_table[1] = _NIL
+	else
+		for i = 1, select("#", ...) do
+			if root_table[i] == nil then
+				root_table[i] = _NIL
 			end
-
-		elseif t=="number" then
-			if v ~= v then -- Not a Number (NaN)
-				error ("Cannot serialize NaN")
-			elseif v == inf then
-				nres = nres + 1
-				res[nres] = SEPARATOR_INTEGER
-				nres = nres + 1
-				res[nres] = string.char(32) -- WARNING: Assuming base 224 number cant start with 0 (ASCII 32)
-			elseif v == -inf then
-				nres = nres + 1
-				res[nres] = SEPARATOR_INTEGER
-				nres = nres + 1
-				res[nres] = string.char(32+112)  -- WARNING: Assuming base 224 number cant start with -0 (ASCII 32+112)
-			elseif v % 1 == 0 and v > -2^52 and v < 2^52 then
-				-- Integer not in this ranged does not support precise
-				-- integer computation
-				-- TODO: Lua 5.3 int handling
-				-- TODO: Better edge testing.
-				nres = nres + 1
-				res[nres] = SEPARATOR_INTEGER
-				nres = nres + 1
-				res[nres] = IntToBase224(v, true)
-			else -- float number
-				-- TODO: for Lua 5.3, need to consider
-				-- "float" typed number is integer.
-				local m, e = math_frexp(v)
-
-				while m % 1 ~= 0 do
-					m = m * 2
-					e = e - 1
-				end
-				if e == 0 then
-					nres = nres + 1
-					res[nres] = SEPARATOR_FLOAT
-					nres = nres + 1
-					res[nres] = IntToBase224(m, true)
-					nres = nres + 1
-					res[nres] = string.char(32)
-				else
-					local encoded_exp = IntToBase224(e, true)
-					for _=1, encoded_exp:len() do
-						nres = nres + 1
-						res[nres] = SEPARATOR_FLOAT
-					end
-					nres = nres + 1
-					res[nres] = IntToBase224(m, true)
-					nres = nres + 1
-					res[nres] = encoded_exp
-				end
-			end
-
-		elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
-			local isArray = table_is_array[v]
-			if isArray then
-				nres=nres+1
-				res[nres] = SEPARATOR_ARRAY_START
-				stack_size = stack_size + 1
-				stack[stack_size] = MARK_TABLE_END
-				for k=#v, 1, -1 do -- Key is not serilaized for array
-					stack_size = stack_size + 1
-					stack[stack_size] = v[k]
-				end
-			else
-				nres=nres+1
-				res[nres] = SEPARATOR_TABLE_START
-				stack_size = stack_size + 1
-				stack[stack_size] = MARK_TABLE_END
-				for k, v in pairs(v) do -- Key is not serilaized for array
-					stack_size = stack_size + 1
-					stack[stack_size] = v
-					stack_size = stack_size + 1
-					stack[stack_size] = k
-				end
-			end
-
-		elseif t=="boolean" then	-- ^B = true, ^b = false
-			nres=nres+1
-			if v then
-				res[nres] = SEPARATOR_TRUE	-- true
-			else
-				res[nres] = SEPARATOR_FALSE	-- false
-			end
-
-		elseif t=="nil" then		-- ^Z = nil (zero, "N" was taken :P)
-			nres=nres+1
-			res[nres] = SEPARATOR_NIL
-		else
-			error(MAJOR..": Cannot serialize a value of type '"..t.."'")	-- can't produce error on right level, this is wildly recursive
 		end
 	end
+
+	while table_stack_size > 0 do
+		local cur_table_is_array = table_is_array[cur_table]
+		local cur_key = table_cur_key[table_stack_size]
+		local table_iter
+		if cur_table_is_array then
+			table_iter = ipairs(cur_table)
+		else
+			table_iter = next
+		end
+
+		local val = table_next_val[table_stack_size]
+		local k, v
+		if val == nil then
+			k, v = table_iter(cur_table, cur_key)
+		else
+			k, v = cur_key, cur_table[cur_key]
+		end
+
+		while k ~= nil do
+			local next_val
+			if val == nil then
+				if cur_table_is_array then
+					val = v
+					next_val = nil
+				else
+					val = k
+					next_val = v
+				end
+			end
+
+			while val ~= nil do
+				nres = nres + 1
+				local type_val = type(val)
+				if type_val == "string" then
+					if not strToIndex[val] then
+						if counts[val] > 1 and #val > #(tostring(strIndexSer)) then
+							res[nres] = SEPARATOR_STRING_REUSED
+							nres = nres + 1
+							res[nres] = gsub(val, ".", SerializeStringHelper)
+							strToIndex[val] = strIndexSer
+							strIndexSer = strIndexSer + 1
+						else
+							res[nres] = SEPARATOR_STRING
+							nres = nres + 1
+							res[nres] = gsub(val, ".", SerializeStringHelper)
+						end
+					else
+						res[nres] = SEPARATOR_STRING_REPLACEMENT
+						nres = nres + 1
+						res[nres] = IntToBase224(strToIndex[val])
+					end
+				elseif type_val == "number" then
+					if val ~= val then -- Not a Number (NaN)
+						error ("Cannot serialize NaN")
+					elseif val == inf then
+						res[nres] = SEPARATOR_INTEGER
+						nres = nres + 1
+						res[nres] = string.char(32) -- WARNING: Assuming base 224 number cant start with 0 (ASCII 32)
+					elseif val == -inf then
+						res[nres] = SEPARATOR_INTEGER
+						nres = nres + 1
+						res[nres] = string.char(32+112)  -- WARNING: Assuming base 224 number cant start with -0 (ASCII 32+112)
+					elseif val % 1 == 0 and val > -2^52 and val < 2^52 then
+						-- Integer not in this ranged does not support precise
+						-- integer computation
+						-- TODO: Lua 5.3 int handling
+						-- TODO: Better edge testing.
+						res[nres] = SEPARATOR_INTEGER
+						nres = nres + 1
+						res[nres] = IntToBase224(val, true)
+					else -- float number
+						-- TODO: for Lua 5.3, need to consider
+						-- "float" typed number is integer.
+						local m, e = math_frexp(val)
+
+						while m % 1 ~= 0 do
+							m = m * 2
+							e = e - 1
+						end
+						if e == 0 then
+							res[nres] = SEPARATOR_FLOAT
+							nres = nres + 1
+							res[nres] = IntToBase224(m, true)
+							nres = nres + 1
+							res[nres] = string.char(32)
+						else
+							local encoded_exp = IntToBase224(e, true)
+							for _=1, #encoded_exp do
+								res[nres] = SEPARATOR_FLOAT
+								nres = nres + 1
+							end
+							res[nres] = IntToBase224(m, true)
+							nres = nres + 1
+							res[nres] = encoded_exp
+						end
+					end
+				elseif val == _NIL then
+					res[nres] = SEPARATOR_NIL
+				elseif val == true then
+					res[nres] = SEPARATOR_TRUE
+				elseif val == false then
+					res[nres] = SEPARATOR_FALSE
+				elseif type_val =="table" then
+					table_cur_key[table_stack_size] = k
+					table_next_val[table_stack_size] = next_val
+					cur_table = val
+					table_stack_size = table_stack_size + 1
+					table_stack[table_stack_size] = cur_table
+					cur_table_is_array = table_is_array[cur_table]
+
+					if cur_table_is_array then
+						table_iter = ipairs(cur_table)
+						k = 0
+						res[nres] = SEPARATOR_ARRAY_START
+					else
+						table_iter = next
+						k = nil
+						res[nres] = SEPARATOR_TABLE_START
+					end
+					next_val = nil
+				else
+					-- can't produce error on right level, this is wildly recursive
+					error(MAJOR..": Cannot serialize a value of type '"
+						..type_val.."'")
+				end
+
+				val = next_val
+				next_val = nil
+			end -- while val ~= nil
+			k, v = table_iter(cur_table, k)
+		end -- while k ~= nil
+		if table_stack_size > 1 then
+			nres = nres + 1
+			res[nres] = SEPARATOR_TABLE_END
+		end
+		table_stack_size = table_stack_size - 1
+		cur_table = table_stack[table_stack_size]
+	end -- while table_stack_size > 0
 
 	return tconcat(res, "", 1, nres)
 end
