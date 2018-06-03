@@ -75,6 +75,7 @@ local SEPARATOR_LAST = '\025'
 
 
 -- Serialization functions
+local serialize_pattern = "(["..ESCAPE.."-"..SEPARATOR_LAST.."])"
 local SerializeStringHelper = {}
 for i= 0, 255 do
 	local ch = strchar(i)
@@ -176,6 +177,7 @@ function LibSerializer:Serialize(...)
 	local table_stack = {cur_table}
 	local table_next = {}
 	local table_is_array = {}
+	local table_sorted_keys = {}
 	table_is_array[cur_table] = 0
 
 	while table_stack_size > 0 do
@@ -183,11 +185,17 @@ function LibSerializer:Serialize(...)
 		local table_size = #cur_table
 		local table_count = table_is_array[cur_table]
 		k, v = next(cur_table, k)
+		local sorted_keys = {}
+		local sorted_keys_tblsize = 0
 		while k ~= nil do
 			local type_k = type(k)
 			if type_k == "string" then
 				counts[k] = (counts[k] or 0) + 1
 				key_counts[k] = (key_counts[k] or 0) + 1
+			end
+			if cur_table ~= root_table then
+				sorted_keys_tblsize = sorted_keys_tblsize + 1
+				sorted_keys[sorted_keys_tblsize] = k
 			end
 			if table_count then
 				if type_k ~= "number" then
@@ -217,6 +225,7 @@ function LibSerializer:Serialize(...)
 		if table_count == table_size then
 			table_is_array[cur_table] = true
 		else
+			table_sorted_keys[cur_table] = sorted_keys
 			table_is_array[cur_table] = nil
 		end
 		table_stack_size = table_stack_size - 1
@@ -235,9 +244,52 @@ function LibSerializer:Serialize(...)
 	table.sort(sort_key, SortTable2ndDecreasing)
 
 	local duplicate_keys = {}
+	local duplicate_keys_to_index = {}
 	local duplicate_keys_tblsize = sort_key_tblsize
 	for i = 1, duplicate_keys_tblsize do
-		duplicate_keys[i] = sort_key[i][1]
+		local t = sort_key[i]
+		duplicate_keys[i] = t[2]
+		duplicate_keys_to_index[t[1]] = i
+	end
+
+	local type_order = {
+		["string"] = 1,
+		["number"] = 2,
+		["table"] = 3,
+		["boolean"] = 4,
+	}
+
+	local function SortTableKeys(a, b)
+		local type_a = type(a) or 10000
+		local type_b = type(b) or 10000
+		local type_order_a = type_order[type_a]
+		local type_order_b = type_order[type_b]
+
+		if type_order_a ~= type_order_b then
+			return type_order_a < type_order_b
+		elseif type_a == "string" then
+			local order_a = duplicate_keys_to_index[a] or math.huge
+			local order_b = duplicate_keys_to_index[b] or math.huge
+			if order_a ~= order_b then
+				return order_a > order_b
+			else
+				return a < b
+			end
+		elseif type_a == "number" then
+			local is_float_a = (a % 1 == 0)
+			local is_float_b = (b % 1 == 0)
+			if is_float_a ~= is_float_b then
+				return is_float_b
+			else
+				return a < b
+			end
+		else
+			return tostring(a) < tostring(b)
+		end
+	end
+
+	for _, sorted_keys in pairs(table_sorted_keys) do
+		table.sort(sorted_keys, SortTableKeys)
 	end
 	sort_key = nil -- free memory space
 
@@ -248,6 +300,8 @@ function LibSerializer:Serialize(...)
 	table_stack = {cur_table}
 	local table_cur_key = {0}
 	local table_next_val = {}
+	local table_sorted_keys = {}
+
 	if next(duplicate_keys) then
 		root_table[0] = duplicate_keys
 		table_cur_key[1] = -1
@@ -278,7 +332,11 @@ function LibSerializer:Serialize(...)
 		local val = table_next_val[table_stack_size]
 		local k, v
 		if val == nil then
-			k, v = table_iter(cur_table, cur_key)
+			if cur_table_is_array then
+				k, v = cur_key + 1, cur_table[cur_key+1]
+			else
+				k, v = table_iter(cur_table, cur_key)
+			end
 		else
 			k, v = cur_key, cur_table[cur_key]
 		end
@@ -301,7 +359,8 @@ function LibSerializer:Serialize(...)
 				if type_val == "string" then
 					if not strToIndex[val] then
 						local index = IntToBase224(strIndexSer)
-						local val_written = gsub(val, ".", SerializeStringHelper)
+						local val_written = gsub(val, serialize_pattern
+							, SerializeStringHelper)
 						if counts[val] > 1 and #val_written > #index then
 							res[nres] = SEPARATOR_STRING_REUSED
 							nres = nres + 1
@@ -369,7 +428,7 @@ function LibSerializer:Serialize(...)
 					res[nres] = SEPARATOR_TRUE
 				elseif val == false then
 					res[nres] = SEPARATOR_FALSE
-				elseif type_val =="table" then
+				elseif type_val == "table" then
 					table_cur_key[table_stack_size] = k
 					table_next_val[table_stack_size] = next_val
 					cur_table = val
