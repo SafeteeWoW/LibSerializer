@@ -83,28 +83,6 @@ local function SerializeStringHelper(ch)	-- Used by SerializeValue for strings
 	end
 end
 
-local function IsTableArray(t)
-	local len = #t
-	local count = 0
-	for k, v in pairs(t) do
-		if type(k) ~= "number" then
-			return false
-		end
-		if k < 1 or k > len or k ~= math.floor(k) then
-			return false
-		end
-		count = count + 1
-		if count > len then
-			return false
-		end
-	end
-	if count ~= len then
-		return false
-	else
-		return true
-	end
-end
-
 local function IntToBase224(n, is_signed)
 	assert(n%1==0)
 	local non_negative = (n >= 0)
@@ -182,27 +160,49 @@ function LibSerializer:Serialize(...)
 	local table_stack_size = 1
 	local table_stack = {cur_table}
 	local table_next = {}
+	local table_is_array = {}
+	table_is_array[cur_table] = 0
 
 	while table_stack_size > 0 do
 		local k, v = table_next[table_stack_size]
+		local table_size = #cur_table
+		local table_count = table_is_array[cur_table]
 		k, v = next(cur_table, k)
 		while k ~= nil do
-			if type(k) == "string" then
+			local type_k = type(k)
+			if type_k == "string" then
 				counts[k] = (counts[k] or 0) + 1
 				key_counts[k] = (key_counts[k] or 0) + 1
+			end
+			if table_count then
+				if type_k ~= "number" then
+					table_count = nil
+				elseif k < 1 or k > table_size or k % 1 ~= 0 then
+					table_count = nil
+				else
+					table_count = table_count + 1
+				end
 			end
 			local type_v = type(v)
 			if type_v == "string" then
 				counts[v] = (counts[v] or 0) + 1
 			elseif type_v == "table" then
 				table_next[table_stack_size] = k
+				table_is_array[cur_table] = table_count
 				table_stack_size = table_stack_size + 1
 				cur_table = v
+				table_size = #cur_table
 				table_stack[table_stack_size] = cur_table
 				table_next[cur_table] = nil
 				k = nil
+				table_count = 0
 			end
 			k, v = next(cur_table, k)
+		end
+		if table_count == table_size then
+			table_is_array[cur_table] = true
+		else
+			table_is_array[cur_table] = nil
 		end
 		table_stack_size = table_stack_size - 1
 		cur_table = table_stack[table_stack_size]
@@ -296,7 +296,7 @@ function LibSerializer:Serialize(...)
 			end
 
 		elseif t=="table" then	-- ^T...^t = table (list of key,value pairs)
-			local isArray = IsTableArray(v)
+			local isArray = table_is_array[v]
 			if isArray then
 				nres=nres+1
 				res[nres] = SEPARATOR_ARRAY_START
