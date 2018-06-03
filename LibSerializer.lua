@@ -48,13 +48,6 @@ local pairs, ipairs, select, math_frexp, ldexp = pairs, ipairs, select, math.fre
 local tconcat, tinsert = table.concat, table.insert
 local floor = math.floor
 
-if not wipe then
-	wipe = function(t)
-		for k,_ in pairs(t) do
-			t[k] = nil
-		end
-	end
-end
 -- quick copies of string representations of wonky numbers
 local inf = math.huge
 
@@ -74,18 +67,11 @@ local SEPARATOR_NIL = '\023' -- nil
 local SEPARATOR_STRING_REPLACEMENT = '\024' -- For strings that are replaced (encoded as "reused string index")
 local SEPARATOR_STRING_REUSED = '\025' -- For strings that are reused (encoded as original string)
 local SEPARATOR_LAST = '\025'
-local CH_SEPARATOR_LAST = strbyte(SEPARATOR_LAST)
-local COMPRESSED_INT_BASE = 255 - strbyte("0") + 1
 
 -- One byte string?
 -- ASCII 1-10, 26-31, 248, 249, 250, 251, 252, 253, 254, 255
 -- For string replacment
-local strIndexSer = 0
-local strToIndex = {}
-local indexToStr = {}
-local counts = {}
-local key_counts = {}
-local baseItemStringDecode = nil
+
 
 -- Serialization functions
 local function SerializeStringHelper(ch)	-- Used by SerializeValue for strings
@@ -116,26 +102,6 @@ local function IsTableArray(t)
 		return false
 	else
 		return true
-	end
-end
-
--- Preprocess the value to get duplicate strings/number count
-local function GetValueCounts(val)
-	-- We use "^" as a value separator, followed by one byte for type indicator
-	local t = type(val)
-
-	if t == "string" then
-		counts[val] = counts[val] and counts[val] + 1 or 1
-	elseif t == "number" then
-		counts[val] = counts[val] and counts[val] + 1 or 1
-	elseif t == "table" then	-- ^T...^t = table (list of key,value pairs)
-		for k, v in pairs(val) do
-			if type(k) == "string" then
-				key_counts[k] = key_counts[k] and key_counts[k] + 1 or 1
-			end
-			GetValueCounts(k)
-			GetValueCounts(v)
-		end
 	end
 end
 
@@ -200,8 +166,6 @@ end
 
 local MARK_TABLE_END = {}
 
-local serializeTbl = { } -- Unlike AceSerializer-3.0, there is no header in the serialized string.
-
 --- Serialize the data passed into the function.
 -- Takes a list of values (strings, numbers, booleans, nils, tables)
 -- and returns it in serialized form (a string).\\
@@ -209,14 +173,39 @@ local serializeTbl = { } -- Unlike AceSerializer-3.0, there is no header in the 
 -- @param ... List of values to serialize
 -- @return The data in its serialized form (string)
 function LibSerializer:Serialize(...)
-	strIndexSer = 1
-	wipe(strToIndex)
-	wipe(counts)
-	baseItemStringDecode = nil
+	local strIndexSer = 1
+	local strToIndex = {}
+	local counts = {}
+	local key_counts = {}
 
-	for i=1, select("#", ...) do
-		local v = select(i, ...)
-		GetValueCounts(v)
+	local cur_table = {...}
+	local table_stack_size = 1
+	local table_stack = {cur_table}
+	local table_next = {}
+
+	while table_stack_size > 0 do
+		local k, v = table_next[table_stack_size]
+		k, v = next(cur_table, k)
+		while k ~= nil do
+			if type(k) == "string" then
+				counts[k] = (counts[k] or 0) + 1
+				key_counts[k] = (key_counts[k] or 0) + 1
+			end
+			local type_v = type(v)
+			if type_v == "string" then
+				counts[v] = (counts[v] or 0) + 1
+			elseif type_v == "table" then
+				table_next[table_stack_size] = k
+				table_stack_size = table_stack_size + 1
+				cur_table = v
+				table_stack[table_stack_size] = cur_table
+				table_next[cur_table] = nil
+				k = nil
+			end
+			k, v = next(cur_table, k)
+		end
+		table_stack_size = table_stack_size - 1
+		cur_table = table_stack[table_stack_size]
 	end
 
 	local stack = {}
@@ -371,6 +360,9 @@ end
 -- Callers are expected to pcall(DeserializeValue) to trap errors
 
 local function DeserializeValue(iter)
+	local indexToStr = {}
+	local strIndexDeser = 1
+
 	local root_table = {}
 	local table_stack = {root_table}
 	local table_key = {1}
@@ -510,9 +502,6 @@ end
 -- @param str The serialized data (from :Serialize)
 -- @return true followed by a list of values, OR false followed by an error message
 function LibSerializer:Deserialize(str)
-	strIndexDeser = 1
-	baseItemStringDecode = nil
-	wipe(indexToStr)
 	local STR_END = SEPARATOR_INTEGER.."END"
 	local iter = gmatch(str..STR_END, "(["..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."])([^"..SEPARATOR_FIRST.."-"..SEPARATOR_LAST.."]*)")
 	return pcall(DeserializeValue, iter)
