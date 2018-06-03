@@ -397,127 +397,139 @@ end
 --
 -- Callers are expected to pcall(DeserializeValue) to trap errors
 
-local function DeserializeValue(iter, single, ctl, data)
-	if not single then
-		ctl, data = iter()
-	end
+local function DeserializeValue(iter)
+	local root_table = {}
+	local table_stack = {root_table}
+	local table_key = {1}
+	local table_is_array = {true}
+	local table_stack_size = 1
+	local cur_table = root_table
+	local cur_key = 1
+	local cur_is_array = true
 
-	if not ctl then
-		error("ilformed data for LibSerializer")
-	end
+	while true do
+		local ctl, data = iter()
+		if not ctl then
+			error("ilformed data for LibSerializer")
+		end
 
-	local res
-	if ctl == SEPARATOR_STRING then
-		res = gsub(data, ESCAPE..".", DeserializeStringHelper)
-	elseif ctl == SEPARATOR_STRING_REUSED then
-		res = gsub(data, ESCAPE..".", DeserializeStringHelper)
-		indexToStr[strIndexDeser] = res
-		strIndexDeser = strIndexDeser + 1
-	elseif ctl == SEPARATOR_STRING_REPLACEMENT then
-		local index = CompressedIntToInt(data)
-		if not index or not indexToStr[index] then
-			error("Invalid string replacement index in LibSerializer")
-		end
-		res = indexToStr[index]
-	elseif ctl == SEPARATOR_INTEGER then
-		if data == "END" then -- End of string mark
-			return
-		end
-		if data == string.char(32) then
-			res = inf
-		elseif data == string.char(32+112) then
-			res = -inf
+		local res
+		if ctl == SEPARATOR_STRING then
+			res = gsub(data, ESCAPE..".", DeserializeStringHelper)
+		elseif ctl == SEPARATOR_STRING_REUSED then
+			res = gsub(data, ESCAPE..".", DeserializeStringHelper)
+			indexToStr[strIndexDeser] = res
+			strIndexDeser = strIndexDeser + 1
+		elseif ctl == SEPARATOR_STRING_REPLACEMENT then
+			local index = CompressedIntToInt(data)
+			if not index or not indexToStr[index] then
+				error("Invalid string replacement index in LibSerializer")
+			end
+			res = indexToStr[index]
+		elseif ctl == SEPARATOR_INTEGER then
+			if data == "END" then -- End of string mark -- TODO
+				break
+			end
+			if data == string.char(32) then
+				res = inf
+			elseif data == string.char(32+112) then
+				res = -inf
+			else
+				res = Base224ToInt(data, true)
+			end
+			if not res then
+				error("Invalid serialized number: '"..tostring(data).."'")
+			end
+		elseif ctl == SEPARATOR_FLOAT then     -- ^F<mantissa>^f<exponent>
+			local exp_strlen = 1
+			while data == "" and exp_strlen < 4 do
+				ctl, data = iter()
+				exp_strlen = exp_strlen + 1
+				if ctl ~= SEPARATOR_FLOAT then
+					error ("TODO")
+				end
+			end
+			if exp_strlen == 4 then
+				error("TODO3")
+			end
+			local len = data:len()
+			if len < exp_strlen then
+				error ("TODO2")
+			end
+			local m = Base224ToInt(data:sub(1, len-exp_strlen), true)
+			local e = Base224ToInt(data:sub(len-exp_strlen+1, len), true)
+			res = m*(2^e)
+		elseif ctl == SEPARATOR_TRUE then	-- yeah yeah ignore data portion
+			res = true
+			if data ~= "" then
+				error("Unexpected data for LibSerializer after true marker")
+			end
+		elseif ctl == SEPARATOR_FALSE then   -- yeah yeah ignore data portion
+			res = false
+			if data ~= "" then
+				error("Unexpected data for LibSerializer after false marker")
+			end
+		elseif ctl == SEPARATOR_NIL then	-- yeah yeah ignore data portion
+			res = nil
+			if data ~= "" then
+				error("Unexpected data for LibSerializer after nil marker")
+			end
+		elseif ctl == SEPARATOR_TABLE_START then
+			res = {}
+		elseif ctl == SEPARATOR_ARRAY_START then
+			res = {}
+		elseif ctl == SEPARATOR_TABLE_END then
+			table_stack_size = table_stack_size - 1
+			cur_table = table_stack[table_stack_size]
+			cur_is_array = 	table_is_array[table_stack_size]
+			cur_key = table_key[table_stack_size]
+			if table_stack_size == 0 then
+				error("TODO")
+			end
 		else
-			res = Base224ToInt(data, true)
+			error("Invalid LibSerializer control code '"..ctl.."'(".."character number code:"..strbyte(ctl)..")")
 		end
-		if not res then
-			error("Invalid serialized number: '"..tostring(data).."'")
-		end
-	elseif ctl == SEPARATOR_FLOAT then     -- ^F<mantissa>^f<exponent>
-		local exp_strlen = 1
-		while data == "" and exp_strlen < 4 do
-			ctl, data = iter()
-			exp_strlen = exp_strlen + 1
-		end
-		if exp_strlen == 4 then
-			error("TODO3")
-		end
-		if ctl ~= SEPARATOR_FLOAT then
-			error ("TODO")
-		end
-		local len = data:len()
-		if len < exp_strlen then
-			error ("TODO2")
-		end
-		local m = Base224ToInt(data:sub(1, len-exp_strlen), true)
-		local e = Base224ToInt(data:sub(len-exp_strlen+1, len), true)
-		res = m*(2^e)
-	elseif ctl == SEPARATOR_TRUE then	-- yeah yeah ignore data portion
-		res = true
-		if data ~= "" then
-			error("Unexpected data for LibSerializer after true marker")
-		end
-	elseif ctl == SEPARATOR_FALSE then   -- yeah yeah ignore data portion
-		res = false
-		if data ~= "" then
-			error("Unexpected data for LibSerializer after false marker")
-		end
-	elseif ctl == SEPARATOR_NIL then	-- yeah yeah ignore data portion
-		res = nil
-		if data ~= "" then
-			error("Unexpected data for LibSerializer after nil marker")
-		end
-	elseif ctl == SEPARATOR_TABLE_START then
-		-- ignore ^T's data, future extensibility?
-		res = {}
-		local k,v
-		while true do
-			ctl, data = iter()
-			if ctl == SEPARATOR_TABLE_END then
-				if data ~= "" then
-					error("Unexpected data for LibSerializer after table end marker")
+
+		if ctl ~= SEPARATOR_TABLE_END then
+			if cur_is_array then
+				cur_table[cur_key] = res
+				cur_key = cur_key + 1
+			else
+				if cur_key ~= nil then
+					cur_table[cur_key] = res
+					cur_key = nil
+				else
+					cur_key = res
+					if cur_key == nil then
+						error ("nil table key")
+					end
 				end
-				break
 			end
-			k = DeserializeValue(iter, true, ctl, data)
-			if k==nil then
-				error("Invalid LibSerializer table format (no table end marker)")
+
+			if ctl == SEPARATOR_TABLE_START then
+				table_key[table_stack_size] = cur_key
+				cur_table = res
+				table_stack_size = table_stack_size + 1
+				table_stack[table_stack_size] = cur_table
+				table_is_array[table_stack_size] = false
+				cur_is_array = false
+				cur_key = nil
+			elseif ctl == SEPARATOR_ARRAY_START then
+				table_key[table_stack_size] = cur_key
+				cur_table = res
+				table_stack_size = table_stack_size + 1
+				table_stack[table_stack_size] = cur_table
+				table_is_array[table_stack_size] = true
+				cur_is_array = true
+				cur_key = 1
 			end
-			ctl, data = iter()
-			v = DeserializeValue(iter, true, ctl, data)
-			if v == nil then
-				error("Invalid LibSerializer table format (no table end marker)")
-			end
-			res[k] = v
 		end
-	elseif ctl == SEPARATOR_ARRAY_START then
-		-- ignore ^T's data, future extensibility?
-		res = {}
-		local k = 1
-		while true do
-			ctl, data = iter()
-			if ctl == SEPARATOR_TABLE_END then
-				if data ~= "" then
-					error("Unexpected data for LibSerializer after array end marker")
-				end
-				break
-			end
-			local v = DeserializeValue(iter, true, ctl, data)
-			if v == nil then
-				error("Invalid LibSerializer table format (no table end marker)")
-			end
-			res[k] = v
-			k = k + 1
-		end
-	else
-		error("Invalid LibSerializer control code '"..ctl.."'(".."character number code:"..strbyte(ctl)..")")
 	end
 
-	if not single then
-		return res, DeserializeValue(iter)
-	else
-		return res
+	if table_stack_size > 1 then
+		error ("TODO: Unmatch table")
 	end
+	return unpack(root_table)
 end
 
 --- Deserializes the data into its original values.

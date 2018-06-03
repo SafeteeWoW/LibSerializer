@@ -64,7 +64,7 @@ local function Test(...)
 	if select(1, ...) ~= nil then
 		msg = tostring(select(1, ...))
 	end
-	lu.assertEquals(result, {result[1], ...}, msg)
+	lu.assertEquals({result[1], ...}, result, msg)
 	lu.assertTrue(result[1])
 end
 
