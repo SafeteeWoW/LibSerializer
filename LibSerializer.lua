@@ -175,63 +175,80 @@ function LibSerializer:Serialize(...)
 	local cur_table = root_table
 	local table_stack_size = 1
 	local table_stack = {cur_table}
-	local table_next = {}
+	local table_cur_key = {}
+	local table_next_val = {}
 	local table_is_array = {}
 	local table_sorted_keys = {}
 	table_is_array[cur_table] = 0
 
+	-- TODO: Clean up my messy code.
 	while table_stack_size > 0 do
-		local k, v = table_next[table_stack_size]
+		local k = table_cur_key[table_stack_size]
+		local v
 		local table_size = #cur_table
 		local table_count = table_is_array[cur_table]
-		k, v = next(cur_table, k)
-		local sorted_keys = {}
-		local sorted_keys_tblsize = 0
-		while k ~= nil do
-			local type_k = type(k)
-			if type_k == "string" then
-				counts[k] = (counts[k] or 0) + 1
-				key_counts[k] = (key_counts[k] or 0) + 1
-			end
-			if cur_table ~= root_table then
-				sorted_keys_tblsize = sorted_keys_tblsize + 1
-				sorted_keys[sorted_keys_tblsize] = k
-			end
-			if table_count then
-				if type_k ~= "number" then
-					table_count = nil
-				elseif k < 1 or k > table_size or k % 1 ~= 0 then
-					table_count = nil
-				else
-					table_count = table_count + 1
-				end
-			end
-			local type_v = type(v)
-			if type_v == "string" then
-				counts[v] = (counts[v] or 0) + 1
-			elseif type_v == "table" then
-				table_next[table_stack_size] = k
-				table_is_array[cur_table] = table_count
-				table_stack_size = table_stack_size + 1
-				cur_table = v
-				table_size = #cur_table
-				table_stack[table_stack_size] = cur_table
-				table_next[cur_table] = nil
-				k = nil
-				table_count = 0
-			end
+		local sorted_keys = table_sorted_keys[cur_table] or {}
+		local val = table_next_val[table_stack_size]
+		local next_val
+		local val_is_key, next_val_is_key
+		if val == nil then
 			k, v = next(cur_table, k)
+			val, next_val = k, v
+			val_is_key, next_val_is_key = true, false
 		end
+		while k ~= nil do
+			while val ~= nil do
+				local type_val = type(val)
+				if val_is_key then
+					if cur_table ~= root_table then
+						sorted_keys[#sorted_keys+1] = val
+					end
+					if table_count then
+						if type_val ~= "number" then
+							table_count = nil
+						elseif val < 1 or val > table_size or val % 1 ~= 0 then
+							table_count = nil
+						else
+							table_count = table_count + 1
+						end
+					end
+				end
+				if type_val== "string" then
+					counts[val] = (counts[val] or 0) + 1
+					if val_is_key then
+						key_counts[val] = (key_counts[val] or 0) + 1
+					end
+				elseif type_val == "table" then
+					table_cur_key[table_stack_size] = k
+					table_next_val[table_stack_size] = next_val
+					table_is_array[cur_table] = table_count
+					table_sorted_keys[cur_table] = sorted_keys
+					sorted_keys = {}
+					table_stack_size = table_stack_size + 1
+					cur_table = val
+					table_size = #cur_table
+					table_stack[table_stack_size] = cur_table
+					k = nil
+					next_val = nil
+					table_count = 0
+				end
+				val, next_val = next_val, nil
+				val_is_key, next_val_is_key = next_val_is_key, nil
+			end -- while val ~= nil
+			k, v = next(cur_table, k)
+			val, next_val = k, v
+			val_is_key, next_val_is_key = true, false
+		end -- while k ~= nil
 		if table_count == table_size then
 			table_is_array[cur_table] = true
+			table_sorted_keys[cur_table] = nil
 		else
-			table_sorted_keys[cur_table] = sorted_keys
 			table_is_array[cur_table] = nil
+			table_sorted_keys[cur_table] = sorted_keys
 		end
 		table_stack_size = table_stack_size - 1
 		cur_table = table_stack[table_stack_size]
 	end
-
 
 	local sort_key = {}
 	local sort_key_tblsize = 0
@@ -298,9 +315,8 @@ function LibSerializer:Serialize(...)
 	cur_table = root_table
 	table_stack_size = 1
 	table_stack = {cur_table}
-	local table_cur_key = {0}
-	local table_next_val = {}
-	local table_sorted_keys = {}
+	table_cur_key = {0}
+	table_next_val = {}
 
 	if next(duplicate_keys) then
 		root_table[0] = duplicate_keys
@@ -322,23 +338,22 @@ function LibSerializer:Serialize(...)
 	while table_stack_size > 0 do
 		local cur_table_is_array = table_is_array[cur_table]
 		local cur_key = table_cur_key[table_stack_size]
-		local table_iter
-		if cur_table_is_array then
-			table_iter = ipairs(cur_table)
-		else
-			table_iter = next
-		end
+		local cur_sorted_keys = table_sorted_keys[cur_table]
 
 		local val = table_next_val[table_stack_size]
 		local k, v
 		if val == nil then
-			if cur_table_is_array then
-				k, v = cur_key + 1, cur_table[cur_key+1]
-			else
-				k, v = table_iter(cur_table, cur_key)
-			end
-		else
+			cur_key = cur_key + 1
+		end
+
+		if cur_table_is_array then
 			k, v = cur_key, cur_table[cur_key]
+			if v == nil then k = nil end
+		else
+			k = cur_sorted_keys[cur_key]
+			if k ~= nil then
+				v = cur_table[k]
+			end
 		end
 
 		while k ~= nil do
@@ -429,21 +444,20 @@ function LibSerializer:Serialize(...)
 				elseif val == false then
 					res[nres] = SEPARATOR_FALSE
 				elseif type_val == "table" then
-					table_cur_key[table_stack_size] = k
+					table_cur_key[table_stack_size] = cur_key
 					table_next_val[table_stack_size] = next_val
 					cur_table = val
 					table_stack_size = table_stack_size + 1
 					table_stack[table_stack_size] = cur_table
 					cur_table_is_array = table_is_array[cur_table]
+					cur_sorted_keys = table_sorted_keys[cur_table]
 
 					if cur_table_is_array then
-						table_iter = ipairs(cur_table)
-						k = 0
+						cur_key = 0
 						res[nres] = (val ~= duplicate_keys) and
 							SEPARATOR_ARRAY_START or SEPARATOR_TABLE_END
 					else
-						table_iter = next
-						k = nil
+						cur_key = 0
 						res[nres] = SEPARATOR_TABLE_START
 					end
 					next_val = nil
@@ -456,7 +470,17 @@ function LibSerializer:Serialize(...)
 				val = next_val
 				next_val = nil
 			end -- while val ~= nil
-			k, v = table_iter(cur_table, k)
+
+			cur_key = cur_key + 1
+			if cur_table_is_array then
+				k, v = cur_key, cur_table[cur_key]
+				if v == nil then k = nil end
+			else
+				k = cur_sorted_keys[cur_key]
+				if k ~= nil then
+					v = cur_table[k]
+				end
+			end
 		end -- while k ~= nil
 		if table_stack_size > 1 then
 			nres = nres + 1
